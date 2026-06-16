@@ -1,328 +1,242 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const mongoose = require('mongoose');
 const cors = require('cors');
-const path = require('path');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+// CORS 설정 (Vercel 주소)
+const corsOptions = {
+  origin: ['http://localhost:5173', 'https://coffee-roulette-liard.vercel.app'],
+  credentials: true
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
-const dbFile = path.join(__dirname, 'coffee.db');
-const db = new sqlite3.Database(dbFile, (err) => {
-  if (err) {
-    console.error('DB open error', err);
-    process.exit(1);
+// MongoDB 연결
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('MongoDB connected successfully'))
+  .catch(err => console.error('MongoDB connection error:', err));
+
+// MongoDB Schema 정의
+const participantSchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const Participant = mongoose.model('Participant', participantSchema);
+
+const gameResultSchema = new mongoose.Schema({
+  winnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Participant', required: true },
+  roundId: { type: Number, required: true, default: 1 },
+  status: { type: String, enum: ['pending', 'paid', 'skipped'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now }
+});
+const GameResult = mongoose.model('GameResult', gameResultSchema);
+
+const settingSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true },
+  value: { type: String, required: true }
+});
+const Setting = mongoose.model('Setting', settingSchema);
+
+// 헬퍼 함수
+async function getCurrentRound() {
+  const setting = await Setting.findOne({ key: 'current_round' });
+  return setting ? parseInt(setting.value, 10) : 1;
+}
+
+async function setCurrentRound(round) {
+  await Setting.findOneAndUpdate(
+    { key: 'current_round' },
+    { value: round.toString() },
+    { upsert: true, new: true }
+  );
+}
+
+// 참가자 API
+app.post('/api/participants', async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: '이름을 입력해주세요' });
+    
+    const participant = new Participant({ name: name.trim() });
+    await participant.save();
+    
+    // id를 프론트엔드와 맞추기 위해 _id를 id로 변환해서 보냄
+    res.status(201).json({ id: participant._id, name: participant.name });
+  } catch (err) {
+    if (err.code === 11000) return res.status(400).json({ error: '이미 존재하는 이름입니다' });
+    res.status(500).json({ error: err.message });
   }
-  initializeDatabase((initErr) => {
-    if (initErr) {
-      console.error('Database initialization failed:', initErr);
-      process.exit(1);
-    }
-    startServer();
-  });
 });
 
-function initializeDatabase(callback) {
-  db.serialize(() => {
-    db.run(
-      `CREATE TABLE IF NOT EXISTS participants (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )`,
-      (err) => {
-        if (err) return callback(err);
-
-        db.run(
-          `CREATE TABLE IF NOT EXISTS game_results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            winner_id INTEGER NOT NULL,
-            round_id INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (winner_id) REFERENCES participants(id)
-          )`,
-          (err) => {
-            if (err) return callback(err);
-
-            migrateOldGameResultsSchema((migrateErr) => {
-              if (migrateErr) return callback(migrateErr);
-
-              db.run(
-                `CREATE TABLE IF NOT EXISTS settings (
-                  key TEXT PRIMARY KEY,
-                  value TEXT
-                )`,
-                (err) => {
-                  if (err) return callback(err);
-
-                  db.get("SELECT value FROM settings WHERE key = 'current_round'", (err, row) => {
-                    if (err) return callback(err);
-                    if (!row) {
-                      db.run("INSERT INTO settings (key, value) VALUES ('current_round', '1')", (err) => {
-                        if (err) return callback(err);
-                        callback(null);
-                      });
-                    } else {
-                      callback(null);
-                    }
-                  });
-                }
-              );
-            });
-          }
-        );
-      }
-    );
-  });
-}
-
-function migrateOldGameResultsSchema(callback) {
-  db.all(`PRAGMA table_info(game_results)`, (err, rows) => {
-    if (err) return callback(err);
-    const columns = rows.map((row) => row.name);
-
-    if (columns.includes('game_date') && !columns.includes('round_id')) {
-      db.serialize(() => {
-        db.run(`DROP TABLE IF EXISTS game_results_new`, (dropErr) => {
-          if (dropErr) return callback(dropErr);
-
-          db.run(
-            `CREATE TABLE IF NOT EXISTS game_results_new (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              winner_id INTEGER NOT NULL,
-              round_id INTEGER NOT NULL,
-              status TEXT NOT NULL DEFAULT 'pending',
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              FOREIGN KEY (winner_id) REFERENCES participants(id)
-            )`,
-            (createErr) => {
-              if (createErr) return callback(createErr);
-
-              db.run(
-                `INSERT INTO game_results_new (winner_id, round_id, status, created_at)
-                 SELECT winner_id, 1, 'pending', game_date FROM game_results`,
-                (insertErr) => {
-                  if (insertErr) return callback(insertErr);
-
-                  db.run('DROP TABLE IF EXISTS game_results', (dropOldErr) => {
-                    if (dropOldErr) return callback(dropOldErr);
-
-                    db.run('ALTER TABLE game_results_new RENAME TO game_results', (renameErr) => {
-                      if (renameErr) return callback(renameErr);
-                      callback(null);
-                    });
-                  });
-                }
-              );
-            }
-          );
-        });
-      });
-    } else {
-      const tasks = [];
-      if (!columns.includes('round_id')) {
-        tasks.push((done) => db.run(`ALTER TABLE game_results ADD COLUMN round_id INTEGER NOT NULL DEFAULT 1`, done));
-      }
-      if (!columns.includes('status')) {
-        tasks.push((done) => db.run(`ALTER TABLE game_results ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'`, done));
-      }
-      if (!columns.includes('created_at')) {
-        tasks.push((done) => db.run(`ALTER TABLE game_results ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP`, done));
-      }
-
-      if (tasks.length === 0) return callback(null);
-
-      let completed = 0;
-      for (const task of tasks) {
-        task((taskErr) => {
-          if (taskErr) return callback(taskErr);
-          completed += 1;
-          if (completed === tasks.length) callback(null);
-        });
-      }
-    }
-  });
-}
-
-function getCurrentRound(cb) {
-  db.get("SELECT value FROM settings WHERE key = 'current_round'", (err, row) => {
-    if (err) return cb(err);
-    const r = row ? parseInt(row.value, 10) : 1;
-    cb(null, r);
-  });
-}
-
-function setCurrentRound(next, cb) {
-  db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('current_round', ?)", [String(next)], (err) => cb(err));
-}
-
-// Participants
-app.post('/api/participants', (req, res) => {
-  const { name } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: '이름을 입력해주세요' });
-  db.run('INSERT INTO participants (name) VALUES (?)', [name.trim()], function (err) {
-    if (err) {
-      if (err.message.includes('UNIQUE')) return res.status(400).json({ error: '이미 존재하는 이름입니다' });
-      return res.status(500).json({ error: err.message });
-    }
-    res.status(201).json({ id: this.lastID, name });
-  });
+app.get('/api/participants', async (req, res) => {
+  try {
+    const participants = await Participant.find().sort({ createdAt: -1 });
+    // SQLite 형식과 맞추기
+    res.json(participants.map(p => ({ id: p._id, name: p.name, created_at: p.createdAt })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/participants', (req, res) => {
-  db.all('SELECT * FROM participants ORDER BY created_at DESC', (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
-});
-
-app.delete('/api/participants/:id', (req, res) => {
-  const { id } = req.params;
-  db.run('DELETE FROM participants WHERE id = ?', [id], (err) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.delete('/api/participants/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await Participant.findByIdAndDelete(id);
     res.json({ message: '참가자가 삭제되었습니다' });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Play a game: pick random participant excluding those who already PAID in current round
-app.post('/api/game/play', (req, res) => {
-  getCurrentRound((err, round) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const sql = `SELECT p.* FROM participants p
-                 WHERE p.id NOT IN (
-                   SELECT winner_id FROM game_results WHERE round_id = ?
-                 )
-                 ORDER BY RANDOM() LIMIT 1`;
-    db.get(sql, [round], (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!row) return res.status(400).json({ error: '현재 라운드에서 더 이상 선택 가능한 참가자가 없습니다. 라운드를 진행해주세요.' });
-      const winner = row;
-      db.run('INSERT INTO game_results (winner_id, round_id, status) VALUES (?, ?, ?)', [winner.id, round, 'pending'], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ id: this.lastID, winner_id: winner.id, winner_name: winner.name, round_id: round, status: 'pending' });
-      });
+// 게임 플레이 API
+app.post('/api/game/play', async (req, res) => {
+  try {
+    const round = await getCurrentRound();
+    
+    // 이번 라운드에 이미 선택된 사람들의 ID 가져오기
+    const paidResults = await GameResult.find({ roundId: round }).select('winnerId');
+    const paidWinnerIds = paidResults.map(result => result.winnerId);
+
+    // 아직 선택되지 않은 참가자 찾기
+    const eligibleParticipants = await Participant.find({ _id: { $nin: paidWinnerIds } });
+
+    if (eligibleParticipants.length === 0) {
+      return res.status(400).json({ error: '현재 라운드에서 더 이상 선택 가능한 참가자가 없습니다. 라운드를 진행해주세요.' });
+    }
+
+    // 랜덤 선택
+    const winner = eligibleParticipants[Math.floor(Math.random() * eligibleParticipants.length)];
+
+    const gameResult = new GameResult({
+      winnerId: winner._id,
+      roundId: round,
+      status: 'pending'
     });
-  });
-});
+    await gameResult.save();
 
-// Get recent results
-app.get('/api/game/results', (req, res) => {
-  db.all(`SELECT gr.id, gr.winner_id, gr.round_id, IFNULL(gr.status, 'pending') AS status, IFNULL(gr.created_at, '') AS created_at, p.name
-          FROM game_results gr JOIN participants p ON p.id = gr.winner_id
-          ORDER BY gr.created_at DESC LIMIT 50`, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(Array.isArray(rows) ? rows : []);
-  });
-});
-
-// Update result status (pending -> paid | skipped)
-app.put('/api/results/:id', (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  if (!['paid', 'skipped'].includes(status)) return res.status(400).json({ error: '잘못된 상태' });
-
-  db.get('SELECT status, winner_id, round_id FROM game_results WHERE id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!row) return res.status(404).json({ error: '결과를 찾을 수 없습니다' });
-    if (row.status !== 'pending') return res.status(400).json({ error: '상태 전이는 pending에서만 허용됩니다' });
-
-    db.run('UPDATE game_results SET status = ? WHERE id = ?', [status, id], function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      db.get('SELECT gr.id, gr.status, gr.round_id, p.name FROM game_results gr JOIN participants p ON p.id=gr.winner_id WHERE gr.id = ?', [id], (err, updated) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(updated);
-      });
+    res.json({
+      id: gameResult._id,
+      winner_id: winner._id,
+      winner_name: winner.name,
+      round_id: round,
+      status: 'pending'
     });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Statistics: count only status === 'paid'
-app.get('/api/statistics', (req, res) => {
-  db.all(`SELECT p.id, p.name,
-          IFNULL((SELECT COUNT(*) FROM game_results gr WHERE gr.winner_id = p.id AND gr.status = 'paid'), 0) as game_count,
-          p.created_at
-          FROM participants p
-          ORDER BY game_count DESC`, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+// 결과 조회 API
+app.get('/api/game/results', async (req, res) => {
+  try {
+    const results = await GameResult.find()
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .populate('winnerId', 'name'); // winnerId 참조해서 Participant의 name 가져옴
+
+    res.json(results.map(r => ({
+      id: r._id,
+      winner_id: r.winnerId ? r.winnerId._id : null,
+      name: r.winnerId ? r.winnerId.name : 'Unknown',
+      round_id: r.roundId,
+      status: r.status,
+      created_at: r.createdAt
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Round info and progress
-app.get('/api/round', (req, res) => {
-  getCurrentRound((err, round) => {
-    if (err) return res.status(500).json({ error: err.message });
-    db.get('SELECT COUNT(*) as total FROM participants', (err, pRow) => {
-      if (err) return res.status(500).json({ error: err.message });
-      db.get('SELECT COUNT(*) as paidCount FROM game_results WHERE round_id = ? AND status = "paid"', [round], (err, paidRow) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ current_round: round, total_participants: pRow.total, paid_count: paidRow.paidCount });
-      });
+// 상태 업데이트 API
+app.put('/api/results/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!['paid', 'skipped'].includes(status)) return res.status(400).json({ error: '잘못된 상태' });
+
+    const result = await GameResult.findById(id).populate('winnerId');
+    if (!result) return res.status(404).json({ error: '결과를 찾을 수 없습니다' });
+    if (result.status !== 'pending') return res.status(400).json({ error: '상태 전이는 pending에서만 허용됩니다' });
+
+    result.status = status;
+    await result.save();
+
+    res.json({
+      id: result._id,
+      status: result.status,
+      round_id: result.roundId,
+      name: result.winnerId.name
     });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// pending winners for current round
-app.get('/api/round/pending-winners', (req, res) => {
-  getCurrentRound((err, round) => {
-    if (err) return res.status(500).json({ error: err.message });
-    db.all(`SELECT gr.id, gr.winner_id as participant_id, p.name FROM game_results gr JOIN participants p ON p.id=gr.winner_id
-            WHERE gr.round_id = ? AND gr.status = 'pending'`, [round], (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
-    });
-  });
+// 라운드 정보 및 리셋 관련 API
+app.get('/api/round', async (req, res) => {
+  try {
+    const round = await getCurrentRound();
+    const totalParticipants = await Participant.countDocuments();
+    const paidCount = await GameResult.countDocuments({ roundId: round, status: 'paid' });
+    
+    res.json({ current_round: round, total_participants: totalParticipants, paid_count: paidCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Advance round: only when no pending results
-app.post('/api/round/advance', (req, res) => {
-  getCurrentRound((err, round) => {
-    if (err) return res.status(500).json({ error: err.message });
-    db.get('SELECT COUNT(*) as pending FROM game_results WHERE round_id = ? AND status = "pending"', [round], (err, pendingRow) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (pendingRow.pending > 0) return res.status(400).json({ error: '처리되지 않은 pending 결과가 있습니다' });
-
-      db.get('SELECT COUNT(*) as totalResults FROM game_results WHERE round_id = ?', [round], (err, totalRow) => {
-        if (err) return res.status(500).json({ error: err.message });
-
-        db.get('SELECT COUNT(*) as totalParticipants FROM participants', (err, partRow) => {
-          if (err) return res.status(500).json({ error: err.message });
-          if (totalRow.totalResults < partRow.totalParticipants) {
-            return res.status(400).json({ error: '모든 참가자가 현재 라운드에서 처리되지 않았습니다' });
-          }
-
-          const next = round + 1;
-          setCurrentRound(next, (err) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ message: '라운드가 증가되었습니다', next_round: next });
-          });
-        });
-      });
-    });
-  });
+app.get('/api/round/pending-winners', async (req, res) => {
+  try {
+    const round = await getCurrentRound();
+    const results = await GameResult.find({ roundId: round, status: 'pending' }).populate('winnerId', 'name');
+    
+    res.json(results.map(r => ({
+      id: r._id,
+      participant_id: r.winnerId._id,
+      name: r.winnerId.name
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Reset: clear game_results and reset round to 1
-app.post('/api/reset', (req, res) => {
-  db.serialize(() => {
-    db.run('DELETE FROM game_results', (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      setCurrentRound(1, (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: '게임 데이터가 초기화되고 라운드가 1로 설정되었습니다' });
-      });
-    });
-  });
+app.post('/api/round/advance', async (req, res) => {
+  try {
+    const round = await getCurrentRound();
+    const pendingCount = await GameResult.countDocuments({ roundId: round, status: 'pending' });
+    
+    if (pendingCount > 0) return res.status(400).json({ error: '처리되지 않은 pending 결과가 있습니다' });
+
+    const totalResults = await GameResult.countDocuments({ roundId: round });
+    const totalParticipants = await Participant.countDocuments();
+
+    if (totalResults < totalParticipants) {
+      return res.status(400).json({ error: '모든 참가자가 현재 라운드에서 처리되지 않았습니다' });
+    }
+
+    const next = round + 1;
+    await setCurrentRound(next);
+    res.json({ message: '라운드가 증가되었습니다', next_round: next });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/reset', async (req, res) => {
+  try {
+    await GameResult.deleteMany({});
+    await setCurrentRound(1);
+    res.json({ message: '게임 데이터가 초기화되고 라운드가 1로 설정되었습니다' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/health', (req, res) => res.json({ status: 'OK' }));
 
-function startServer() {
-  app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
-  });
-}
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`);
+});
