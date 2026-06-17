@@ -6,22 +6,21 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS 설정 및 JSON 파싱
 app.use(cors());
 app.use(express.json());
 
-// MongoDB 연결
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('MongoDB connected successfully'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-// MongoDB Schema 정의
+// 1. Participant (참가자 명단)
 const participantSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   createdAt: { type: Date, default: Date.now }
 });
 const Participant = mongoose.model('Participant', participantSchema);
 
+// 2. GameResult (결과 저장용 - 나중을 위해 유지)
 const gameResultSchema = new mongoose.Schema({
   winnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Participant', required: true },
   roundId: { type: Number, required: true, default: 1 },
@@ -35,6 +34,14 @@ const settingSchema = new mongoose.Schema({
   value: { type: String, required: true }
 });
 const Setting = mongoose.model('Setting', settingSchema);
+
+// 3. ✨ [추가됨] GameState (실시간 동기화를 위한 영구 저장소) ✨
+const stateSchema = new mongoose.Schema({
+  key: { type: String, default: 'mainState', unique: true },
+  currentOrder: { type: [String], default: [] },
+  completed: { type: [String], default: [] }
+});
+const GameState = mongoose.model('GameState', stateSchema);
 
 // 헬퍼 함수
 async function getCurrentRound() {
@@ -50,23 +57,33 @@ async function setCurrentRound(round) {
   );
 }
 
-// 실시간 상태 동기화를 위한 메모리 변수
-let gameState = {
-  currentOrder: [],
-  completed: []
-};
-
 // --- API 라우터들 ---
 
-// 상태 동기화 API
-app.get('/api/state', (req, res) => {
-  res.json(gameState);
+// ✨ [수정됨] 메모리 변수 대신 DB에서 읽고 쓰기 ✨
+app.get('/api/state', async (req, res) => {
+  try {
+    let state = await GameState.findOne({ key: 'mainState' });
+    if (!state) {
+      state = await GameState.create({ key: 'mainState', currentOrder: [], completed: [] });
+    }
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.post('/api/state', (req, res) => {
-  const { currentOrder, completed } = req.body;
-  gameState = { currentOrder, completed };
-  res.json({ success: true, gameState });
+app.post('/api/state', async (req, res) => {
+  try {
+    const { currentOrder, completed } = req.body;
+    const state = await GameState.findOneAndUpdate(
+      { key: 'mainState' },
+      { currentOrder, completed },
+      { upsert: true, new: true }
+    );
+    res.json({ success: true, gameState: state });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 참가자 API
@@ -188,7 +205,14 @@ app.post('/api/reset', async (req, res) => {
   try {
     await GameResult.deleteMany({});
     await setCurrentRound(1);
-    gameState = { currentOrder: [], completed: [] }; // 메모리 상태도 초기화
+    
+    // ✨ [추가됨] 리셋 시 DB 상태도 함께 비우기 ✨
+    await GameState.findOneAndUpdate(
+      { key: 'mainState' },
+      { currentOrder: [], completed: [] },
+      { upsert: true }
+    );
+    
     res.json({ message: '게임 데이터가 초기화되었습니다' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -197,7 +221,6 @@ app.post('/api/reset', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'OK' }));
 
-// 서버 실행 (항상 마지막에!)
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
