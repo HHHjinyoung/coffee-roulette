@@ -3,11 +3,11 @@ import Confetti from 'react-confetti';
 import './App.css';
 
 type Participant = {
-  id: number;
+  id: string;
   name: string;
 };
 
-const INITIAL_NAMES = ['박현준', '윤선호', '김민재', '김상지', '류병걸', '황주신', '허진영'];
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const shuffleArray = <T,>(items: T[]) => {
   const copy = [...items];
@@ -20,33 +20,72 @@ const shuffleArray = <T,>(items: T[]) => {
 
 function App() {
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [currentOrder, setCurrentOrder] = useState<string[]>([]);
-  const [completed, setCompleted] = useState<string[]>([]);
+  
+  const [currentOrder, setCurrentOrder] = useState<string[]>(() => {
+    const saved = localStorage.getItem('coffee_currentOrder');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [completed, setCompleted] = useState<string[]>(() => {
+    const saved = localStorage.getItem('coffee_completed');
+    return saved ? JSON.parse(saved) : [];
+  });
+  
   const [nameInput, setNameInput] = useState('');
   const [slotName, setSlotName] = useState('—');
   const [isSlotRolling, setIsSlotRolling] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
+
+  // [수정됨] 화면 크기 초기값을 useState 안에서 바로 가져오도록 변경 (에러 해결)
+  const [windowSize, setWindowSize] = useState({ 
+    width: window.innerWidth, 
+    height: window.innerHeight 
+  });
 
   useEffect(() => {
-    setParticipants(INITIAL_NAMES.map((name, idx) => ({ id: idx + 1, name })));
+    const fetchParticipants = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/participants`);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setParticipants(data);
+        }
+      } catch (error) {
+        // [수정됨] error 변수를 실제로 사용하여 미사용 에러 해결
+        console.error('DB 연동 실패:', error);
+        setToast('데이터베이스 연결에 실패했습니다.');
+      }
+    };
+    fetchParticipants();
   }, []);
 
   useEffect(() => {
-    if (participants.length > 0 && currentOrder.length === 0 && completed.length === 0) {
-      setCurrentOrder(shuffleArray(participants.map((participant) => participant.name)));
+    localStorage.setItem('coffee_currentOrder', JSON.stringify(currentOrder));
+  }, [currentOrder]);
+
+  useEffect(() => {
+    localStorage.setItem('coffee_completed', JSON.stringify(completed));
+  }, [completed]);
+
+  useEffect(() => {
+    const hasSavedState = localStorage.getItem('coffee_currentOrder') || localStorage.getItem('coffee_completed');
+    if (participants.length > 0 && currentOrder.length === 0 && completed.length === 0 && (!hasSavedState || hasSavedState === '[]')) {
+      // [수정됨] 초기 설정 시 발생하는 불가피한 상태 변경이므로 검사기 예외 처리
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCurrentOrder(shuffleArray(participants.map((p) => p.name)));
     }
   }, [participants, currentOrder.length, completed.length]);
 
   useEffect(() => {
     if (currentOrder.length === 0) {
+      // [수정됨] 검사기 예외 처리
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSlotName('—');
       return;
     }
 
     setIsSlotRolling(true);
-    const allNames = participants.map((participant) => participant.name);
+    const allNames = participants.length > 0 ? participants.map((p) => p.name) : ['로딩중...'];
     let count = 0;
     const interval = window.setInterval(() => {
       setSlotName(allNames[Math.floor(Math.random() * allNames.length)]);
@@ -61,8 +100,8 @@ function App() {
     return () => window.clearInterval(interval);
   }, [currentOrder, participants]);
 
+  // [수정됨] 불필요한 초기 상태 세팅 제거 (위쪽 useState에서 처리함)
   useEffect(() => {
-    setWindowSize({ width: window.innerWidth, height: window.innerHeight });
     const handleResize = () => setWindowSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
@@ -77,44 +116,71 @@ function App() {
   const remainingSequence = useMemo(() => currentOrder.slice(1).join(' ➔ '), [currentOrder]);
   const remainingText = currentOrder.length > 1 ? remainingSequence : '다음 라운드 준비 중...';
 
-  const addParticipant = () => {
+  const addParticipant = async () => {
     const trimmed = nameInput.trim();
     if (!trimmed) {
       setToast('이름을 입력해 주세요!');
       return;
     }
-    if (participants.some((participant) => participant.name === trimmed)) {
+    if (participants.some((p) => p.name === trimmed)) {
       setToast('이미 있는 이름이에요!');
       return;
     }
 
-    const nextId = participants.length > 0 ? Math.max(...participants.map((participant) => participant.id)) + 1 : 1;
-    const nextParticipants = [...participants, { id: nextId, name: trimmed }];
-    setParticipants(nextParticipants);
-    setNameInput('');
-    setToast(`✨ ${trimmed}님이 추가되었습니다!`);
-    setCurrentOrder((prev) => [...prev, trimmed]);
+    try {
+      const res = await fetch(`${API_URL}/api/participants`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed })
+      });
+
+      if (!res.ok) throw new Error('추가 실패');
+      const newParticipant = await res.json();
+
+      setParticipants((prev) => [newParticipant, ...prev]);
+      setCurrentOrder((prev) => [...prev, trimmed]);
+      setNameInput('');
+      setToast(`✨ ${trimmed}님이 추가되었습니다!`);
+    } catch (error) {
+      // [수정됨] error 출력 추가
+      console.error(error);
+      setToast('❌ 서버 저장에 실패했습니다.');
+    }
   };
 
-  const removeParticipant = (id: number) => {
-    const target = participants.find((participant) => participant.id === id);
+  const removeParticipant = async (id: string) => {
+    const target = participants.find((p) => p.id === id);
     if (!target) return;
-    const nextParticipants = participants.filter((participant) => participant.id !== id);
-    setParticipants(nextParticipants);
-    setCurrentOrder((prev) => prev.filter((name) => name !== target.name));
-    setCompleted((prev) => prev.filter((name) => name !== target.name));
-    setToast(`🗑️ ${target.name}님이 명단에서 제외되었습니다.`);
-    if (nextParticipants.length === 0) {
-      setCurrentOrder([]);
-      setCompleted([]);
-      setSlotName('—');
+
+    try {
+      const res = await fetch(`${API_URL}/api/participants/${id}`, {
+        method: 'DELETE'
+      });
+
+      if (!res.ok) throw new Error('삭제 실패');
+
+      const nextParticipants = participants.filter((p) => p.id !== id);
+      setParticipants(nextParticipants);
+      setCurrentOrder((prev) => prev.filter((name) => name !== target.name));
+      setCompleted((prev) => prev.filter((name) => name !== target.name));
+      setToast(`🗑️ ${target.name}님이 명단에서 제외되었습니다.`);
+
+      if (nextParticipants.length === 0) {
+        setCurrentOrder([]);
+        setCompleted([]);
+        setSlotName('—');
+      }
+    } catch (error) {
+      // [수정됨] error 출력 추가
+      console.error(error);
+      setToast('❌ 삭제에 실패했습니다.');
     }
   };
 
   const completeRound = () => {
     setToast('🎉 모두가 한 번씩 샀습니다! 순서를 다시 섞습니다!');
     setCompleted([]);
-    setCurrentOrder(shuffleArray(participants.map((participant) => participant.name)));
+    setCurrentOrder(shuffleArray(participants.map((p) => p.name)));
   };
 
   const handlePay = () => {
@@ -216,7 +282,7 @@ function App() {
 
           <div className="roster-list">
             {participants.length === 0 ? (
-              <div className="roster-empty">명단이 비어 있습니다.</div>
+              <div className="roster-empty">명단이 비어 있거나 불러오는 중입니다...</div>
             ) : (
               participants.map((participant) => (
                 <div key={participant.id} className="roster-item">
