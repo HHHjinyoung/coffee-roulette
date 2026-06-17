@@ -6,12 +6,8 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// CORS 설정 (Vercel 주소)
-const corsOptions = {
-  origin: ['http://localhost:5173', 'https://coffee-roulette-liard.vercel.app'],
-  credentials: true
-};
-app.use(cors(corsOptions));
+// ★ 수정됨: CORS 설정 (모든 도메인 허용 - 만능 프리패스!)
+app.use(cors());
 app.use(express.json());
 
 // MongoDB 연결
