@@ -6,7 +6,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ★ 수정됨: CORS 설정 (모든 도메인 허용 - 만능 프리패스!)
+// CORS 설정 및 JSON 파싱
 app.use(cors());
 app.use(express.json());
 
@@ -50,6 +50,25 @@ async function setCurrentRound(round) {
   );
 }
 
+// 실시간 상태 동기화를 위한 메모리 변수
+let gameState = {
+  currentOrder: [],
+  completed: []
+};
+
+// --- API 라우터들 ---
+
+// 상태 동기화 API
+app.get('/api/state', (req, res) => {
+  res.json(gameState);
+});
+
+app.post('/api/state', (req, res) => {
+  const { currentOrder, completed } = req.body;
+  gameState = { currentOrder, completed };
+  res.json({ success: true, gameState });
+});
+
 // 참가자 API
 app.post('/api/participants', async (req, res) => {
   try {
@@ -58,8 +77,6 @@ app.post('/api/participants', async (req, res) => {
     
     const participant = new Participant({ name: name.trim() });
     await participant.save();
-    
-    // id를 프론트엔드와 맞추기 위해 _id를 id로 변환해서 보냄
     res.status(201).json({ id: participant._id, name: participant.name });
   } catch (err) {
     if (err.code === 11000) return res.status(400).json({ error: '이미 존재하는 이름입니다' });
@@ -70,7 +87,6 @@ app.post('/api/participants', async (req, res) => {
 app.get('/api/participants', async (req, res) => {
   try {
     const participants = await Participant.find().sort({ createdAt: -1 });
-    // SQLite 형식과 맞추기
     res.json(participants.map(p => ({ id: p._id, name: p.name, created_at: p.createdAt })));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -87,52 +103,31 @@ app.delete('/api/participants/:id', async (req, res) => {
   }
 });
 
-// 게임 플레이 API
+// 게임 플레이 및 결과 API
 app.post('/api/game/play', async (req, res) => {
   try {
     const round = await getCurrentRound();
-    
-    // 이번 라운드에 이미 선택된 사람들의 ID 가져오기
     const paidResults = await GameResult.find({ roundId: round }).select('winnerId');
     const paidWinnerIds = paidResults.map(result => result.winnerId);
-
-    // 아직 선택되지 않은 참가자 찾기
     const eligibleParticipants = await Participant.find({ _id: { $nin: paidWinnerIds } });
 
     if (eligibleParticipants.length === 0) {
-      return res.status(400).json({ error: '현재 라운드에서 더 이상 선택 가능한 참가자가 없습니다. 라운드를 진행해주세요.' });
+      return res.status(400).json({ error: '현재 라운드에서 더 이상 선택 가능한 참가자가 없습니다.' });
     }
 
-    // 랜덤 선택
     const winner = eligibleParticipants[Math.floor(Math.random() * eligibleParticipants.length)];
-
-    const gameResult = new GameResult({
-      winnerId: winner._id,
-      roundId: round,
-      status: 'pending'
-    });
+    const gameResult = new GameResult({ winnerId: winner._id, roundId: round, status: 'pending' });
     await gameResult.save();
 
-    res.json({
-      id: gameResult._id,
-      winner_id: winner._id,
-      winner_name: winner.name,
-      round_id: round,
-      status: 'pending'
-    });
+    res.json({ id: gameResult._id, winner_id: winner._id, winner_name: winner.name, round_id: round, status: 'pending' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 결과 조회 API
 app.get('/api/game/results', async (req, res) => {
   try {
-    const results = await GameResult.find()
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .populate('winnerId', 'name'); // winnerId 참조해서 Participant의 name 가져옴
-
+    const results = await GameResult.find().sort({ createdAt: -1 }).limit(50).populate('winnerId', 'name');
     res.json(results.map(r => ({
       id: r._id,
       winner_id: r.winnerId ? r.winnerId._id : null,
@@ -146,7 +141,6 @@ app.get('/api/game/results', async (req, res) => {
   }
 });
 
-// 상태 업데이트 API
 app.put('/api/results/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -155,45 +149,22 @@ app.put('/api/results/:id', async (req, res) => {
 
     const result = await GameResult.findById(id).populate('winnerId');
     if (!result) return res.status(404).json({ error: '결과를 찾을 수 없습니다' });
-    if (result.status !== 'pending') return res.status(400).json({ error: '상태 전이는 pending에서만 허용됩니다' });
-
+    
     result.status = status;
     await result.save();
-
-    res.json({
-      id: result._id,
-      status: result.status,
-      round_id: result.roundId,
-      name: result.winnerId.name
-    });
+    res.json({ id: result._id, status: result.status, round_id: result.roundId, name: result.winnerId.name });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 라운드 정보 및 리셋 관련 API
+// 라운드 관리 API
 app.get('/api/round', async (req, res) => {
   try {
     const round = await getCurrentRound();
     const totalParticipants = await Participant.countDocuments();
     const paidCount = await GameResult.countDocuments({ roundId: round, status: 'paid' });
-    
     res.json({ current_round: round, total_participants: totalParticipants, paid_count: paidCount });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/round/pending-winners', async (req, res) => {
-  try {
-    const round = await getCurrentRound();
-    const results = await GameResult.find({ roundId: round, status: 'pending' }).populate('winnerId', 'name');
-    
-    res.json(results.map(r => ({
-      id: r._id,
-      participant_id: r.winnerId._id,
-      name: r.winnerId.name
-    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -203,16 +174,8 @@ app.post('/api/round/advance', async (req, res) => {
   try {
     const round = await getCurrentRound();
     const pendingCount = await GameResult.countDocuments({ roundId: round, status: 'pending' });
-    
     if (pendingCount > 0) return res.status(400).json({ error: '처리되지 않은 pending 결과가 있습니다' });
-
-    const totalResults = await GameResult.countDocuments({ roundId: round });
-    const totalParticipants = await Participant.countDocuments();
-
-    if (totalResults < totalParticipants) {
-      return res.status(400).json({ error: '모든 참가자가 현재 라운드에서 처리되지 않았습니다' });
-    }
-
+    
     const next = round + 1;
     await setCurrentRound(next);
     res.json({ message: '라운드가 증가되었습니다', next_round: next });
@@ -225,7 +188,8 @@ app.post('/api/reset', async (req, res) => {
   try {
     await GameResult.deleteMany({});
     await setCurrentRound(1);
-    res.json({ message: '게임 데이터가 초기화되고 라운드가 1로 설정되었습니다' });
+    gameState = { currentOrder: [], completed: [] }; // 메모리 상태도 초기화
+    res.json({ message: '게임 데이터가 초기화되었습니다' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -233,6 +197,7 @@ app.post('/api/reset', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'OK' }));
 
+// 서버 실행 (항상 마지막에!)
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
