@@ -32,6 +32,9 @@ function App() {
     height: window.innerHeight 
   });
 
+  // ✨ 포인트 1: 데이터 로딩 상태를 기억할 변수 추가! ✨
+  const [isLoaded, setIsLoaded] = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [partRes, stateRes] = await Promise.all([
@@ -48,6 +51,9 @@ function App() {
         setCurrentOrder(stateData.currentOrder || []);
         setCompleted(stateData.completed || []);
       }
+      
+      // ✨ 포인트 2: 서버에서 데이터를 무사히 다 받아왔을 때만 로딩 완료로 체크! ✨
+      setIsLoaded(true);
     } catch (error) {
       console.error('동기화 실패:', error);
     }
@@ -73,14 +79,15 @@ function App() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  // ✨ 포인트 3: isLoaded가 true일 때(로딩이 진짜 끝났을 때)만 초기화 판단! ✨
   useEffect(() => {
-    if (participants.length > 0 && currentOrder.length === 0 && completed.length === 0) {
+    if (isLoaded && participants.length > 0 && currentOrder.length === 0 && completed.length === 0) {
       const initialOrder = shuffleArray(participants.map((p) => p.name));
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setCurrentOrder(initialOrder);
       saveState(initialOrder, []);
     }
-  }, [participants, currentOrder.length, completed.length, saveState]);
+  }, [isLoaded, participants, currentOrder.length, completed.length, saveState]);
 
   useEffect(() => {
     const handleResize = () => setWindowSize({ width: window.innerWidth, height: window.innerHeight });
