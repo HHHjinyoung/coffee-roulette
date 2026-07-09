@@ -7,6 +7,16 @@ type Participant = {
   name: string;
 };
 
+type PaymentLogEntry = {
+  id: string;
+  name: string;
+  paidAt: string;
+};
+
+type ToastState = {
+  message: string;
+};
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const shuffleArray = <T,>(items: T[]) => {
@@ -18,30 +28,36 @@ const shuffleArray = <T,>(items: T[]) => {
   return copy;
 };
 
+const formatLogTime = (paidAt: string) =>
+  new Date(paidAt).toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
 function App() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [currentOrder, setCurrentOrder] = useState<string[]>([]);
   const [completed, setCompleted] = useState<string[]>([]);
   
+  const [paymentLog, setPaymentLog] = useState<PaymentLogEntry[]>([]);
+
   const [nameInput, setNameInput] = useState('');
   const [showConfetti, setShowConfetti] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
 
   const [windowSize, setWindowSize] = useState({ 
     width: window.innerWidth, 
     height: window.innerHeight 
   });
 
-  // ✨ 포인트 1: 데이터 로딩 상태를 기억할 변수 추가! ✨
   const [isLoaded, setIsLoaded] = useState(false);
+  const [activeTab, setActiveTab] = useState<'roster' | 'log'>('roster');
 
   const fetchData = useCallback(async () => {
     try {
-      const [partRes, stateRes] = await Promise.all([
+      const [partRes, stateRes, logRes] = await Promise.all([
         fetch(`${API_URL}/api/participants`),
-        fetch(`${API_URL}/api/state`).catch(() => null)
+        fetch(`${API_URL}/api/state`).catch(() => null),
+        fetch(`${API_URL}/api/payment-log`).catch(() => null)
       ]);
-      
+
       if (partRes.ok) {
         const data = await partRes.json();
         if (Array.isArray(data)) setParticipants(data);
@@ -51,8 +67,11 @@ function App() {
         setCurrentOrder(stateData.currentOrder || []);
         setCompleted(stateData.completed || []);
       }
-      
-      // ✨ 포인트 2: 서버에서 데이터를 무사히 다 받아왔을 때만 로딩 완료로 체크! ✨
+      if (logRes && logRes.ok) {
+        const logData = await logRes.json();
+        if (Array.isArray(logData)) setPaymentLog(logData);
+      }
+
       setIsLoaded(true);
     } catch (error) {
       console.error('동기화 실패:', error);
@@ -79,7 +98,6 @@ function App() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // ✨ 포인트 3: isLoaded가 true일 때(로딩이 진짜 끝났을 때)만 초기화 판단! ✨
   useEffect(() => {
     if (isLoaded && participants.length > 0 && currentOrder.length === 0 && completed.length === 0) {
       const initialOrder = shuffleArray(participants.map((p) => p.name));
@@ -103,8 +121,8 @@ function App() {
 
   const addParticipant = async () => {
     const trimmed = nameInput.trim();
-    if (!trimmed) { setToast('이름을 깜빡하셨네요!'); return; }
-    if (participants.some((p) => p.name === trimmed)) { setToast('이미 있는 이름입니다.'); return; }
+    if (!trimmed) { setToast({ message: '이름을 깜빡하셨네요!' }); return; }
+    if (participants.some((p) => p.name === trimmed)) { setToast({ message: '이미 있는 이름입니다.' }); return; }
 
     const res = await fetch(`${API_URL}/api/participants`, {
       method: 'POST',
@@ -121,23 +139,56 @@ function App() {
   const removeParticipant = async (id: string) => {
     const target = participants.find((p) => p.id === id);
     if (!target) return;
-    
+    if (!window.confirm(`${target.name}님을 명단에서 삭제할까요?`)) return;
+
     await fetch(`${API_URL}/api/participants/${id}`, { method: 'DELETE' });
     const nextOrder = currentOrder.filter((name) => name !== target.name);
     const nextCompleted = completed.filter((name) => name !== target.name);
     saveState(nextOrder, nextCompleted);
   };
 
-  const handleSurprise = (name: string) => {
-    if (completed.includes(name)) return;
+  const logPayment = async (name: string) => {
+    try {
+      await fetch(`${API_URL}/api/payment-log`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      fetchData();
+    } catch (error) {
+      console.error('결제 로그 기록 실패:', error);
+    }
+  };
+
+  const cancelPayment = async (logId: string) => {
+    try {
+      await fetch(`${API_URL}/api/payment-log/${logId}`, { method: 'DELETE' });
+      fetchData();
+    } catch (error) {
+      console.error('결제 로그 취소 실패:', error);
+    }
+  };
+
+  const cancelCompletion = (name: string) => {
+    const latestLog = paymentLog.find((entry) => entry.name === name);
+    const nextCompleted = completed.filter((item) => item !== name);
+    const nextOrder = [...currentOrder, name];
+
+    if (latestLog) cancelPayment(latestLog.id);
+    setToast({ message: `${name}님의 결제를 취소했습니다.` });
+    saveState(nextOrder, nextCompleted);
+  };
+
+  const completeParticipant = (name: string) => {
     const nextCompleted = [...completed, name];
     const nextOrder = currentOrder.filter((item) => item !== name);
-    
+
+    logPayment(name);
     setShowConfetti(true);
     window.setTimeout(() => setShowConfetti(false), 1800);
 
     if (nextOrder.length === 0) {
-      setToast('🎉 오늘도 하루 수고하셨습니다!  준비중...');
+      setToast({ message: '🎉 오늘도 하루 수고하셨습니다!  준비중...' });
       const resetOrder = shuffleArray(participants.map((p) => p.name));
       saveState(resetOrder, []);
     } else {
@@ -145,39 +196,81 @@ function App() {
     }
   };
 
+  const handleSurprise = (name: string) => {
+    if (completed.includes(name)) {
+      cancelCompletion(name);
+    } else {
+      completeParticipant(name);
+    }
+  };
+
   return (
     <div className="app-container">
       {showConfetti && <Confetti width={windowSize.width} height={windowSize.height} recycle={false} numberOfPieces={260} />}
-      {toast && <div className="toast-message">{toast}</div>}
+      {toast && <div className="toast-message">{toast.message}</div>}
       <div className="main-content">
         <header className="hero-section">
           <div className="logo-circle"><img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Food/Hot%20Beverage.png" alt="Coffee Logo" className="animated-logo" /></div>
         </header>
-        <section className="glass-card">
+
+        {participants.length > 0 && (
+          <div className="stats-bar">
+            <div className="stat-tile">
+              <span className="stat-value">{participants.length}</span>
+              <span className="stat-label">참가 인원</span>
+            </div>
+            <div className="stat-tile stat-tile-gauge">
+              <span className="stat-value">{completed.length} / {participants.length}</span>
+              <span className="stat-label">결제 완료</span>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${(completed.length / participants.length) * 100}%` }} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        <section className="glass-card primary-card">
           <div className="card-header">
             <span className="card-icon">💳</span>
-            <h2>결제하신 분의 이름을 눌러주세요:</h2>
+            <h2>결제하신 분의 이름을 눌러주세요</h2>
           </div>
           <div className="participant-grid">
             {participants.map((p) => (
-              <button key={p.id} className={`action-btn ${completed.includes(p.name) ? 'btn-disabled' : 'btn-active'}`} onClick={() => handleSurprise(p.name)} disabled={completed.includes(p.name)}>{p.name}</button>
+              <button key={p.id} className={`action-btn ${completed.includes(p.name) ? 'btn-completed' : 'btn-active'}`} onClick={() => handleSurprise(p.name)}>{p.name}</button>
             ))}
           </div>
+          {completed.length > 0 && (
+            <div className="completed-strip">
+              <span className="completed-strip-label">결제 완료</span>
+              <div className="donator-tags">{completed.map(n => <span key={n} className="donator-tag">{n}</span>)}</div>
+            </div>
+          )}
         </section>
+
         <section className="glass-card">
-          <div className="card-header"><span className="card-icon">✅</span><h2>결제 완료 명단</h2></div>
-          <div className="donators-list">{completed.length > 0 ? <div className="donator-tags">{completed.map(n => <span key={n} className="donator-tag">{n}</span>)}</div> : <p className="empty-state">아직 결제한 사람이 없습니다.</p>}</div>
-        </section>
-        <section className="glass-card roster-card">
-          <div className="card-header flex-header">
-            <div><span className="card-icon">👥</span><h2>팀원 명단 관리</h2><p>멤버를 추가하거나 관리해 주세요.</p></div>
-            <div className="member-count">총 {participants.length}명 함께하는 중</div>
+          <div className="tab-header">
+            <button className={`tab-btn ${activeTab === 'roster' ? 'tab-btn-active' : ''}`} onClick={() => setActiveTab('roster')}>👥 명단 관리</button>
+            <button className={`tab-btn ${activeTab === 'log' ? 'tab-btn-active' : ''}`} onClick={() => setActiveTab('log')}>🧾 결제 로그</button>
           </div>
-          <div className="input-group">
-            <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="새로운 멤버 이름 입력" onKeyPress={(e) => { if(e.key === 'Enter') addParticipant(); }} />
-            <button className="btn-primary" onClick={addParticipant}>+ 합류</button>
-          </div>
-          <div className="roster-list">{participants.map((p) => (<div key={p.id} className="roster-item"><span>{p.name}</span><button className="btn-delete" onClick={() => removeParticipant(p.id)}>삭제</button></div>))}</div>
+
+          {activeTab === 'roster' ? (
+            <div>
+              <div className="input-group">
+                <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="새로운 멤버 이름 입력" onKeyDown={(e) => { if (e.key === 'Enter') addParticipant(); }} />
+                <button className="btn-primary" onClick={addParticipant}>+ 합류</button>
+              </div>
+              <div className="roster-list">{participants.map((p) => (<div key={p.id} className="roster-item"><span>{p.name}</span><button className="btn-delete" onClick={() => removeParticipant(p.id)}>삭제</button></div>))}</div>
+            </div>
+          ) : (
+            <div className="payment-log-list">
+              {paymentLog.length > 0 ? paymentLog.map((entry) => (
+                <div key={entry.id} className="payment-log-item">
+                  <span>{entry.name}</span>
+                  <span className="payment-log-time">{formatLogTime(entry.paidAt)}</span>
+                </div>
+              )) : <p className="empty-state">아직 결제 기록이 없습니다.</p>}
+            </div>
+          )}
         </section>
       </div>
     </div>

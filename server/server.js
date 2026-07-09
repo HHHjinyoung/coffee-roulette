@@ -6,21 +6,25 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+const allowedOrigins = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : true;
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
+
+function handleServerError(res, err) {
+  console.error(err);
+  res.status(500).json({ error: '서버 오류가 발생했습니다' });
+}
 
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('MongoDB connected successfully'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-// 1. Participant (참가자 명단)
 const participantSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   createdAt: { type: Date, default: Date.now }
 });
 const Participant = mongoose.model('Participant', participantSchema);
 
-// 2. GameResult (결과 저장용 - 나중을 위해 유지)
 const gameResultSchema = new mongoose.Schema({
   winnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Participant', required: true },
   roundId: { type: Number, required: true, default: 1 },
@@ -35,7 +39,6 @@ const settingSchema = new mongoose.Schema({
 });
 const Setting = mongoose.model('Setting', settingSchema);
 
-// 3. ✨ [추가됨] GameState (실시간 동기화를 위한 영구 저장소) ✨
 const stateSchema = new mongoose.Schema({
   key: { type: String, default: 'mainState', unique: true },
   currentOrder: { type: [String], default: [] },
@@ -43,7 +46,12 @@ const stateSchema = new mongoose.Schema({
 });
 const GameState = mongoose.model('GameState', stateSchema);
 
-// 헬퍼 함수
+const paymentLogSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  paidAt: { type: Date, default: Date.now }
+});
+const PaymentLog = mongoose.model('PaymentLog', paymentLogSchema);
+
 async function getCurrentRound() {
   const setting = await Setting.findOne({ key: 'current_round' });
   return setting ? parseInt(setting.value, 10) : 1;
@@ -57,9 +65,6 @@ async function setCurrentRound(round) {
   );
 }
 
-// --- API 라우터들 ---
-
-// ✨ [수정됨] 메모리 변수 대신 DB에서 읽고 쓰기 ✨
 app.get('/api/state', async (req, res) => {
   try {
     let state = await GameState.findOne({ key: 'mainState' });
@@ -68,7 +73,7 @@ app.get('/api/state', async (req, res) => {
     }
     res.json(state);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -82,11 +87,41 @@ app.post('/api/state', async (req, res) => {
     );
     res.json({ success: true, gameState: state });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
-// 참가자 API
+app.get('/api/payment-log', async (req, res) => {
+  try {
+    const logs = await PaymentLog.find().sort({ paidAt: -1 }).limit(100);
+    res.json(logs.map(l => ({ id: l._id, name: l.name, paidAt: l.paidAt })));
+  } catch (err) {
+    handleServerError(res, err);
+  }
+});
+
+app.post('/api/payment-log', async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: '이름을 입력해주세요' });
+    const log = await PaymentLog.create({ name: name.trim() });
+    res.status(201).json({ id: log._id, name: log.name, paidAt: log.paidAt });
+  } catch (err) {
+    handleServerError(res, err);
+  }
+});
+
+app.delete('/api/payment-log/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await PaymentLog.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ error: '해당 결제 로그가 없습니다' });
+    res.json({ message: '결제 로그가 취소되었습니다' });
+  } catch (err) {
+    handleServerError(res, err);
+  }
+});
+
 app.post('/api/participants', async (req, res) => {
   try {
     const { name } = req.body;
@@ -97,7 +132,7 @@ app.post('/api/participants', async (req, res) => {
     res.status(201).json({ id: participant._id, name: participant.name });
   } catch (err) {
     if (err.code === 11000) return res.status(400).json({ error: '이미 존재하는 이름입니다' });
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -106,7 +141,7 @@ app.get('/api/participants', async (req, res) => {
     const participants = await Participant.find().sort({ createdAt: -1 });
     res.json(participants.map(p => ({ id: p._id, name: p.name, created_at: p.createdAt })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -116,11 +151,10 @@ app.delete('/api/participants/:id', async (req, res) => {
     await Participant.findByIdAndDelete(id);
     res.json({ message: '참가자가 삭제되었습니다' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
-// 게임 플레이 및 결과 API
 app.post('/api/game/play', async (req, res) => {
   try {
     const round = await getCurrentRound();
@@ -138,7 +172,7 @@ app.post('/api/game/play', async (req, res) => {
 
     res.json({ id: gameResult._id, winner_id: winner._id, winner_name: winner.name, round_id: round, status: 'pending' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -154,7 +188,7 @@ app.get('/api/game/results', async (req, res) => {
       created_at: r.createdAt
     })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -171,11 +205,10 @@ app.put('/api/results/:id', async (req, res) => {
     await result.save();
     res.json({ id: result._id, status: result.status, round_id: result.roundId, name: result.winnerId.name });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
-// 라운드 관리 API
 app.get('/api/round', async (req, res) => {
   try {
     const round = await getCurrentRound();
@@ -183,7 +216,7 @@ app.get('/api/round', async (req, res) => {
     const paidCount = await GameResult.countDocuments({ roundId: round, status: 'paid' });
     res.json({ current_round: round, total_participants: totalParticipants, paid_count: paidCount });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -197,7 +230,7 @@ app.post('/api/round/advance', async (req, res) => {
     await setCurrentRound(next);
     res.json({ message: '라운드가 증가되었습니다', next_round: next });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -205,8 +238,7 @@ app.post('/api/reset', async (req, res) => {
   try {
     await GameResult.deleteMany({});
     await setCurrentRound(1);
-    
-    // ✨ [추가됨] 리셋 시 DB 상태도 함께 비우기 ✨
+
     await GameState.findOneAndUpdate(
       { key: 'mainState' },
       { currentOrder: [], completed: [] },
@@ -215,7 +247,7 @@ app.post('/api/reset', async (req, res) => {
     
     res.json({ message: '게임 데이터가 초기화되었습니다' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    handleServerError(res, err);
   }
 });
 

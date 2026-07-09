@@ -1,7 +1,3 @@
-/* ========================================================
-   🔥 팀 몬스터: 프리미엄 SaaS 스타일 다크 & 글래스모피즘 🔥
-======================================================== */
-
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
 
 :root {
@@ -157,14 +153,6 @@ body::before {
   margin-bottom: 1.5rem;
 }
 
-.flex-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 1rem;
-}
-
 .card-icon {
   font-size: 1.5rem;
   display: block;
@@ -183,14 +171,89 @@ body::before {
   font-size: 0.95rem;
 }
 
-.member-count {
-  background: rgba(255, 159, 67, 0.1);
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+}
+
+.stat-tile {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 18px;
+  padding: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.stat-value {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.stat-tile-gauge .stat-value {
   color: var(--accent-color);
-  padding: 0.5rem 1rem;
-  border-radius: 20px;
+}
+
+.stat-label {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.stat-tile-gauge .progress-track {
+  margin-top: 0.6rem;
+}
+
+.primary-card {
+  border-color: rgba(255, 159, 67, 0.25);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 159, 67, 0.08) inset;
+}
+
+.completed-strip {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.completed-strip-label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.85rem;
   font-weight: 700;
-  font-size: 0.9rem;
-  border: 1px solid rgba(255, 159, 67, 0.2);
+  margin-bottom: 0.8rem;
+}
+
+.tab-header {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 1rem;
+  padding: 0.8rem 0.2rem;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text-main);
+}
+
+.tab-btn-active {
+  color: var(--accent-color);
+  border-bottom-color: var(--accent-color);
 }
 
 /* ========================================================
@@ -232,26 +295,32 @@ body::before {
   transform: translateY(0);
 }
 
-.btn-disabled {
+.btn-disabled,
+.btn-completed {
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.02);
   color: #475569;
-  cursor: not-allowed;
   text-decoration: line-through;
+}
+
+.btn-disabled {
+  cursor: not-allowed;
+}
+
+.btn-completed {
+  cursor: pointer;
+}
+
+.btn-completed:hover {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #f87171;
+  text-decoration: none;
 }
 
 /* ========================================================
    💖 완료자 태그 리스트
 ======================================================== */
-.donators-list {
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 16px;
-  padding: 1.5rem;
-  min-height: 80px;
-  display: flex;
-  align-items: center;
-}
-
 .donator-tags {
   display: flex;
   flex-wrap: wrap;
@@ -367,6 +436,43 @@ body::before {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.payment-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.payment-log-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.8rem 1.2rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+}
+
+.payment-log-time {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.progress-track {
+  margin-top: 0.4rem;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  transition: width 0.3s ease;
+}
+
 .roster-name {
   font-weight: 600;
   font-size: 1.05rem;
@@ -438,5 +544,14 @@ body::before {
   }
   .btn-primary {
     padding: 1rem;
+  }
+  .stats-bar {
+    gap: 0.6rem;
+  }
+  .stat-tile {
+    padding: 0.8rem;
+  }
+  .stat-value {
+    font-size: 1.2rem;
   }
 }
