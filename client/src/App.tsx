@@ -266,14 +266,25 @@ function App() {
     const message = buildUnpaidMessage(unpaidNames);
     const pageUrl = `${window.location.origin}${window.location.pathname}`;
 
-    if (isKakaoConfigured() && shareKakaoText(message, pageUrl)) return;
+    let reason = '카카오 키가 설정되지 않아';
+    if (isKakaoConfigured()) {
+      if (shareKakaoText(message, pageUrl)) return;
+      // SDK가 아직 로드 중이면 기다렸다가 한 번 더 시도
+      try {
+        await loadKakao();
+        if (shareKakaoText(message, pageUrl)) return;
+      } catch (error) {
+        console.error(error);
+      }
+      reason = '카카오 SDK를 불러오지 못해';
+    }
 
     // 키 미설정 / SDK 로드 실패 시: 클립보드 복사로 대체
     try {
       await navigator.clipboard.writeText(message);
-      setToast({ message: '카카오 공유를 쓸 수 없어 명단을 클립보드에 복사했어요.' });
+      setToast({ message: `${reason} 명단을 클립보드에 복사했어요.` });
     } catch {
-      setToast({ message: '카카오 공유를 사용할 수 없습니다.' });
+      setToast({ message: `${reason} 카카오 공유를 사용할 수 없습니다.` });
     }
   };
 
