@@ -334,7 +334,7 @@ function App() {
           {unpaidNames.length > 0 && (
             <div className="share-row">
               <button className="btn-kakao" onClick={shareUnpaid}>
-                <span aria-hidden="true">💬</span> 미결제 {unpaidNames.length}명 카톡으로 알리기
+                <span aria-hidden="true">💬</span> 미결제 명단 공유
               </button>
             </div>
           )}
