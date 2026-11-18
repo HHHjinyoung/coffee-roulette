@@ -212,6 +212,36 @@ body::before {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 159, 67, 0.08) inset;
 }
 
+.share-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1.2rem;
+}
+
+/* 카카오 브랜드 컬러 (#FEE500 / #191919) */
+.btn-kakao {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #fee500;
+  color: #191919;
+  border: none;
+  padding: 0.7rem 1.2rem;
+  border-radius: 12px;
+  font-family: var(--font-family);
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.btn-kakao:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 15px rgba(254, 229, 0, 0.25);
+}
+
 .completed-strip {
   margin-top: 1.5rem;
   padding-top: 1.5rem;
@@ -544,6 +574,11 @@ body::before {
   }
   .btn-primary {
     padding: 1rem;
+  }
+  .btn-kakao {
+    width: 100%;
+    justify-content: center;
+    padding: 0.9rem;
   }
   .stats-bar {
     gap: 0.6rem;

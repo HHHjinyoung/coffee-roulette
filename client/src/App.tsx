@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Confetti from 'react-confetti';
 import './App.css';
+import { isKakaoConfigured, loadKakao, shareKakaoText } from './kakao';
 
 type Participant = {
   id: string;
@@ -30,6 +31,33 @@ const shuffleArray = <T,>(items: T[]) => {
 
 const formatLogTime = (paidAt: string) =>
   new Date(paidAt).toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+const formatShareDate = (date: Date) => {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const day = '일월화수목금토'[date.getDay()];
+  return `${yyyy}-${mm}-${dd}(${day})`;
+};
+
+// 카카오 텍스트 템플릿은 본문 최대 200자. 넘치면 뒤쪽 이름을 "외 N명"으로 줄인다.
+const KAKAO_TEXT_LIMIT = 200;
+const buildUnpaidMessage = (names: string[]) => {
+  const head = `[URO 커피] ${formatShareDate(new Date())} 미결제 명단\n\n`;
+  const tail = '\n\n아직 결제 전이신 분들은 확인 부탁드려요 😊';
+  const compose = (shown: string[]) => {
+    const rest = names.length - shown.length;
+    const lines = shown.map((n) => `- ${n}`);
+    if (rest > 0) lines.push(`- 외 ${rest}명`);
+    return head + lines.join('\n') + tail;
+  };
+
+  for (let count = names.length; count > 0; count -= 1) {
+    const message = compose(names.slice(0, count));
+    if (message.length <= KAKAO_TEXT_LIMIT) return message;
+  }
+  return compose([]);
+};
 
 function App() {
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -108,7 +136,12 @@ function App() {
   }, [isLoaded, participants, currentOrder.length, completed.length, saveState]);
 
   useEffect(() => {
-    const handleResize = () => setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    if (!isKakaoConfigured()) return;
+    loadKakao().catch((error) => console.error(error));
+  }, []);
+
+  useEffect(() => {
+    const handleResize =() => setWindowSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -118,6 +151,42 @@ function App() {
     const timeout = window.setTimeout(() => setToast(null), 3400);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  // 전원 결제 완료 판단은 currentOrder가 아니라 "모든 참가자가 completed에 있는가"로 한다.
+  // (currentOrder는 중간 합류/동시 클릭 등으로 어긋날 수 있음)
+  const allPaid = isLoaded && participants.length > 0 && participants.every((p) => completed.includes(p.name));
+
+  useEffect(() => {
+    if (!allPaid) return undefined;
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setShowConfetti(true);
+    setToast({ message: '🎉 오늘도 하루 수고하셨습니다!  준비중...' });
+
+    const timeout = window.setTimeout(async () => {
+      setShowConfetti(false);
+      try {
+        // 여러 기기가 동시에 열려 있으므로, 리셋 직전에 서버 최신 상태로 다시 확인한다.
+        // 이미 다른 기기가 리셋했거나 새 라운드 결제가 시작됐다면 건너뛴다.
+        const [partRes, stateRes] = await Promise.all([
+          fetch(`${API_URL}/api/participants`),
+          fetch(`${API_URL}/api/state`)
+        ]);
+        if (!partRes.ok || !stateRes.ok) return;
+        const latestParticipants: Participant[] = await partRes.json();
+        const latestState = await stateRes.json();
+        const latestCompleted: string[] = latestState.completed || [];
+        const stillAllPaid = latestParticipants.length > 0
+          && latestParticipants.every((p) => latestCompleted.includes(p.name));
+        if (!stillAllPaid) { fetchData(); return; }
+
+        saveState(shuffleArray(latestParticipants.map((p) => p.name)), []);
+      } catch (error) {
+        console.error('라운드 리셋 실패:', error);
+      }
+    }, 2500);
+    return () => window.clearTimeout(timeout);
+  }, [allPaid, fetchData, saveState]);
 
   const addParticipant = async () => {
     const trimmed = nameInput.trim();
@@ -187,12 +256,24 @@ function App() {
     setShowConfetti(true);
     window.setTimeout(() => setShowConfetti(false), 1800);
 
-    if (nextOrder.length === 0) {
-      setToast({ message: '🎉 오늘도 하루 수고하셨습니다!  준비중...' });
-      const resetOrder = shuffleArray(participants.map((p) => p.name));
-      saveState(resetOrder, []);
-    } else {
-      saveState(nextOrder, nextCompleted);
+    saveState(nextOrder, nextCompleted);
+  };
+
+  const unpaidNames = participants.filter((p) => !completed.includes(p.name)).map((p) => p.name);
+
+  const shareUnpaid = async () => {
+    if (unpaidNames.length === 0) return;
+    const message = buildUnpaidMessage(unpaidNames);
+    const pageUrl = `${window.location.origin}${window.location.pathname}`;
+
+    if (isKakaoConfigured() && shareKakaoText(message, pageUrl)) return;
+
+    // 키 미설정 / SDK 로드 실패 시: 클립보드 복사로 대체
+    try {
+      await navigator.clipboard.writeText(message);
+      setToast({ message: '카카오 공유를 쓸 수 없어 명단을 클립보드에 복사했어요.' });
+    } catch {
+      setToast({ message: '카카오 공유를 사용할 수 없습니다.' });
     }
   };
 
@@ -239,6 +320,13 @@ function App() {
               <button key={p.id} className={`action-btn ${completed.includes(p.name) ? 'btn-completed' : 'btn-active'}`} onClick={() => handleSurprise(p.name)}>{p.name}</button>
             ))}
           </div>
+          {unpaidNames.length > 0 && (
+            <div className="share-row">
+              <button className="btn-kakao" onClick={shareUnpaid}>
+                <span aria-hidden="true">💬</span> 미결제 {unpaidNames.length}명 카톡으로 알리기
+              </button>
+            </div>
+          )}
           {completed.length > 0 && (
             <div className="completed-strip">
               <span className="completed-strip-label">결제 완료</span>

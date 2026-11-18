@@ -9,6 +9,7 @@
 - **결제 완료 현황**: 참가 인원 대비 결제 완료 인원을 스탯 바에서 확인
 - **결제 로그**: 누가 언제 결제했는지 시간과 함께 기록 (취소 시 로그도 함께 삭제)
 - **실시간 동기화**: 3초 주기로 폴링하여 여러 기기에서 같은 상태 유지
+- **미결제 명단 카톡 공유**: 아직 결제하지 않은 멤버 명단을 카카오톡으로 공유 (키 미설정 시 클립보드 복사)
 
 ## 🛠 기술 스택
 
@@ -105,6 +106,20 @@ NODE_ENV=development
 MONGODB_URI=mongodb+srv://...
 CORS_ORIGIN=https://your-frontend-domain.com   # 선택, 미설정 시 전체 허용
 ```
+
+`client/.env` 파일 (`client/.env.example` 참고):
+
+```env
+VITE_API_URL=https://your-backend-domain.com
+VITE_KAKAO_JS_KEY=카카오_JavaScript_키
+```
+
+카카오톡 공유를 쓰려면 [카카오 디벨로퍼스](https://developers.kakao.com)에서:
+
+1. 애플리케이션 생성 → **앱 키 > JavaScript 키**를 `VITE_KAKAO_JS_KEY`에 입력
+2. **플랫폼 > Web > 사이트 도메인**에 프론트엔드 주소 등록 (예: `https://your-frontend-domain.com`, 로컬 테스트 시 `http://localhost:5173`)
+
+`VITE_` 변수는 빌드 시점에 들어가므로, 배포 환경(호스팅 서비스의 환경 변수)에도 같은 값을 넣고 다시 빌드해야 합니다.
 
 ## 📝 개발 팁
 
